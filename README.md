@@ -1,1 +1,1 @@
-# Modernized Recipe Search Engine
+# Hybrid Recipe Search Engine
