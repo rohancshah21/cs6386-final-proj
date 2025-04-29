@@ -7,6 +7,8 @@ import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import faiss
+from rank_bm25 import BM25Okapi
+
 
 DIET_RULES = {
     'vegan': {
@@ -26,7 +28,7 @@ DIET_RULES = {
             'sugar', 'rice', 'pasta', 'bread', 'potato',
             'corn', 'banana', 'oat', 'honey'
         ],
-        'max_carbs_per_serving': 10   
+        'max_carbs_per_serving': 10    # grams
     }
 }
 
@@ -43,8 +45,8 @@ def load_data(path: Path) -> pd.DataFrame:
 
 
 def annotate_diets(df: pd.DataFrame) -> pd.DataFrame:
-    def is_allowed(ingredients: list[str], keywords: list[str]) -> bool:
-        text = ' '.join(ingredients).lower()
+    def is_allowed(ings: list[str], keywords: list[str]) -> bool:
+        text = ' '.join(ings).lower()
         return not any(re.search(rf'\b{kw}\b', text) for kw in keywords)
 
     for diet, rules in DIET_RULES.items():
@@ -57,12 +59,11 @@ def annotate_diets(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_index(
+def build_semantic_index(
     df: pd.DataFrame,
     model_name: str = 'all-MiniLM-L6-v2'
 ) -> tuple[SentenceTransformer, faiss.Index]:
     model = SentenceTransformer(model_name)
-
     docs = (
         df['name'].fillna('') + ' | ' +
         df['summary'].fillna('') + ' | ' +
@@ -70,63 +71,93 @@ def build_index(
         .apply(lambda lst: ' '.join(lst) if isinstance(lst, list) else '')
     ).tolist()
 
-    embeddings = model.encode(
-        docs, show_progress_bar=True, normalize_embeddings=True)
-    embeddings = np.vstack(embeddings).astype('float32')
+    embs = model.encode(docs, show_progress_bar=True,
+                        normalize_embeddings=True)
+    matrix = np.vstack(embs).astype('float32')
 
-    dim = embeddings.shape[1]
+    dim = matrix.shape[1]
     index = faiss.IndexFlatIP(dim)
-    index.add(embeddings)
-
+    index.add(matrix)
     return model, index
 
 
-def semantic_search(
-    query: str,
-    model: SentenceTransformer,
-    index: faiss.Index,
-    df: pd.DataFrame,
-    top_k: int = 5
-) -> pd.DataFrame:
+def build_bm25_index(df: pd.DataFrame) -> BM25Okapi:
+    docs = (
+        df['name'].fillna('') + ' ' +
+        df['summary'].fillna('') + ' ' +
+        df['high_level_ingredients']
+        .apply(lambda lst: ' '.join(lst) if isinstance(lst, list) else '')
+    ).tolist()
+    tokenized = [re.findall(r'\w+', doc.lower()) for doc in docs]
+    return BM25Okapi(tokenized)
+
+
+def semantic_search(query: str, model, index, df: pd.DataFrame, top_k: int) -> pd.DataFrame:
     q_emb = model.encode([query], normalize_embeddings=True).astype('float32')
-    scores, indices = index.search(q_emb, top_k)
-    results = df.iloc[indices[0]].copy().reset_index(drop=True)
-    results['score'] = scores[0]
-    return results
+    scores, idx = index.search(q_emb, top_k)
+    res = df.iloc[idx[0]].copy().reset_index(drop=True)
+    res['semantic_score'] = scores[0]
+    return res
+
+
+def keyword_search(query: str, bm25: BM25Okapi, df: pd.DataFrame, top_k: int) -> pd.DataFrame:
+    tokens = re.findall(r'\w+', query.lower())
+    scores = bm25.get_scores(tokens)
+    top_idx = np.argsort(scores)[::-1][:top_k]
+    res = df.iloc[top_idx].copy().reset_index(drop=True)
+    res['keyword_score'] = scores[top_idx]
+    return res
+
+
+def hybrid_search(
+    query: str,
+    model, index,
+    bm25: BM25Okapi,
+    df: pd.DataFrame,
+    top_k: int,
+    alpha: float = 0.5
+) -> pd.DataFrame:
+
+    q_emb = model.encode([query], normalize_embeddings=True).astype('float32')
+    sem_scores, sem_idx = index.search(q_emb, len(df))
+    sem_scores = sem_scores.flatten()
+
+    tokens = re.findall(r'\w+', query.lower())
+    kw_scores = bm25.get_scores(tokens)
+
+    from sklearn.preprocessing import minmax_scale
+    sem_n = minmax_scale(sem_scores)
+    kw_n = minmax_scale(kw_scores)
+
+    combined = alpha * sem_n + (1 - alpha) * kw_n
+    top_idx = np.argsort(combined)[::-1][:top_k]
+    res = df.iloc[top_idx].copy().reset_index(drop=True)
+    res['semantic_score'] = sem_scores[top_idx]
+    res['keyword_score'] = kw_scores[top_idx]
+    res['score'] = combined[top_idx]
+    return res
 
 
 def main():
-    base_dir = Path(__file__).resolve().parent
-    default_csv = base_dir / 'data' / 'final_df.csv'
+    base = Path(__file__).resolve().parent
+    default_csv = base / 'data' / 'final_df.csv'
 
-    parser = argparse.ArgumentParser(
-        description="Semantic search over recipes with dietary filtering"
+    p = argparse.ArgumentParser(
+        description="Semantic / Keyword / Hybrid search over recipes"
     )
-    parser.add_argument(
-        '--data', '-d',
-        type=Path,
-        default=default_csv,
-        help=f'Path to your CSV (default: {default_csv})'
-    )
-    parser.add_argument(
-        '--model', '-m',
-        type=str,
-        default='all-MiniLM-L6-v2',
-        help='SentenceTransformer model name'
-    )
-    parser.add_argument(
-        '--top_k', '-k',
-        type=int,
-        default=5,
-        help='Number of top recipes to show per query'
-    )
-    parser.add_argument(
-        '--diet',
-        choices=['all', 'vegan', 'gluten_free', 'keto'],
-        default='all',
-        help='Filter recipes by a dietary restriction'
-    )
-    args = parser.parse_args()
+    p.add_argument('-d', '--data',    type=Path, default=default_csv,
+                   help=f'CSV path (default: {default_csv})')
+    p.add_argument('-m', '--model',   type=str,  default='all-MiniLM-L6-v2',
+                   help='SBERT model name')
+    p.add_argument('-k', '--top_k',   type=int,  default=5,
+                   help='Number of results per query')
+    p.add_argument('--diet',          choices=['all', 'vegan', 'gluten_free', 'keto'],
+                   default='all', help='Dietary filter')
+    p.add_argument('--method',        choices=['semantic', 'keyword', 'hybrid'],
+                   default='semantic', help='Search method')
+    p.add_argument('--alpha',         type=float, default=0.5,
+                   help='Weight for semantic in hybrid (0–1)')
+    args = p.parse_args()
 
     df = load_data(args.data)
     df = annotate_diets(df)
@@ -135,30 +166,42 @@ def main():
         mask = df[f'is_{args.diet}']
         df = df[mask].reset_index(drop=True)
         if df.empty:
-            print(
-                f"ERROR: No recipes match diet '{args.diet}'", file=sys.stderr)
+            print(f"No recipes match diet '{args.diet}'.", file=sys.stderr)
             sys.exit(1)
-    print(f"{len(df)} recipes after filtering.")
 
-    model, index = build_index(df, args.model)
+    model, sem_index = build_semantic_index(df, args.model)
+    bm25 = build_bm25_index(df)
 
     try:
         while True:
-            query = input("Query> ").strip()
-            if query.lower() in ('exit', 'quit'):
+            q = input("Query> ").strip()
+            if q.lower() in ('exit', 'quit'):
                 break
-            results = semantic_search(query, model, index, df, args.top_k)
-            print("\nTop results:")
-            for i, row in results.iterrows():
-                print(f"{i+1}. {row['name']}  (score: {row['score']:.4f})")
-                if 'summary' in row:
-                    print(f"   {row['summary']}")
-            print("-" * 40 + "\n")
+
+            if args.method == 'semantic':
+                results = semantic_search(q, model, sem_index, df, args.top_k)
+                for i, r in results.iterrows():
+                    print(
+                        f"{i+1}. {r['name']}  (sem={r['semantic_score']:.4f})")
+
+            elif args.method == 'keyword':
+                results = keyword_search(q, bm25, df, args.top_k)
+                for i, r in results.iterrows():
+                    print(f"{i+1}. {r['name']}  (kw={r['keyword_score']:.4f})")
+
+            else:  # hybrid
+                results = hybrid_search(q, model, sem_index, bm25, df,
+                                        args.top_k, alpha=args.alpha)
+                for i, r in results.iterrows():
+                    print(f"{i+1}. {r['name']}  (sem={r['semantic_score']:.4f}, "
+                          f"kw={r['keyword_score']:.4f}, combined={r['score']:.4f})")
+
+            print("-" * 40)
     except KeyboardInterrupt:
         pass
 
     print("Goodbye!")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
