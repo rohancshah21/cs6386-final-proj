@@ -73,8 +73,8 @@ def main():
         avg_rels.append(np.mean(rels))
 
     plt.plot(alphas, avg_rels, marker='o')
-    plt.xlabel('alpha (semantic weight)')
-    plt.ylabel(f'Avg relevance@{args.top_k}')
+    plt.xlabel('α (semantic weight)')
+    plt.ylabel(f'Average Relevance')
     plt.title('Dynamic Ground‐Truth Relevance vs α')
     plt.grid(True)
     plt.tight_layout()

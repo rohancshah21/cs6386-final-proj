@@ -1,0 +1,7 @@
+pandas
+numpy
+scikit-learn
+sentence_transformers
+faiss-cpu
+rank_bm25
+torchvision==0.14.1                                    
