@@ -84,8 +84,6 @@ def semantic_search(q, model, idx, df, top_k):
 
 
 def jaccard_similarity(query_tokens, doc_tokens):
-    print(f"Query tokens: {query_tokens}")
-    print(f"Document tokens: {doc_tokens}")
     intersection = len(query_tokens.intersection(doc_tokens))
     union = len(query_tokens.union(doc_tokens))
     return intersection / union if union > 0 else 0

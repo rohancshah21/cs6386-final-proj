@@ -1,32 +1,42 @@
 from pathlib import Path
-import openai
+from openai import OpenAI
 import os
 import re
 import pandas as pd
+import sys
 from hybrid_search import (
     load_data, annotate_diets,
-    build_semantic_index, build_jaccard_index,
-    semantic_search, keyword_search, hybrid_search, print_results
+    load_indices, hybrid_search, print_results
 )
 
+_client = OpenAI(api_key="")
+
+
 # --- OpenAI Binary Relevance Rating ---
-def rate_with_llm_binary(query: str, results: pd.DataFrame) -> dict[str,int]:
-    openai.api_key = os.getenv('OPENAI_API_KEY')
+def rate_with_llm_binary(query: str, have: list[str], avoid: list[str], restrictions: str, results: pd.DataFrame) -> dict:
     # build prompt
     prompt = [
-        f"You are a recipe relevance evaluator. The user asked: '{query}'\n",
-        "Here are 5 candidate recipes:\n"
+        f"You are a recipe relevance evaluator. The user asked: for '{query}'\n",
     ]
+    if have:
+        prompt.append(f"User has the following ingredients: {', '.join(have)}\n")
+    if avoid:
+        prompt.append(f"User wants to avoid the following ingredients: {', '.join(avoid)}\n")
+    if restrictions:
+        prompt.append(f"User has dietary restrictions: {', '.join(restrictions)}\n")
+    prompt.append("Here are the top 5 recipes:\n")
+    
     for i, r in results.iterrows():
-        prompt.append(f"{i+1}. {r['name']} - Ingredients: {' '.join(r['high_level_ingredients'])}\n")
+        prompt.append(f"{i+1}. {r['name']} - Ingredients: {' '.join(r['high_level_ingredients'])}\n Description: {r['summary']}\n")
     prompt.append("\nFor each recipe, return 1 if it is relevant to the query, or 0 if not, formatted as a JSON list of objects with 'name' and 'rating'.\n")
     content = ''.join(prompt)
 
-    resp = openai.ChatCompletion.create(
-        model="gpt-4o-mini", temperature=0.0,
+    resp = _client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.0,
         messages=[
-            {"role":"system","content":"You rate recipe relevance with 1 or 0."},
-            {"role":"user","content":content}
+            {"role": "system", "content": "You rate recipe relevance with 1 or 0."},
+            {"role": "user",   "content": content}
         ]
     )
     text = resp.choices[0].message.content
@@ -48,9 +58,14 @@ def evaluate_queries(
     df = load_data(Path(data_path))
     df = annotate_diets(df)
 
-    # Build indices
-    model, sem_idx = build_semantic_index(df, model_name)
-    doc_sets = build_jaccard_index(df)
+    model_dir = Path(__file__).resolve().parent / 'models'
+
+    try:
+        print("Loading pre-built indices...")
+        model, sem_idx, doc_tokens = load_indices(model_dir)
+    except (FileNotFoundError, OSError):
+        print("Pre-built indices not found. Run with --build first.")
+        sys.exit(1)
 
     # Iterate over each test case
     for case in query_cases:
@@ -62,21 +77,19 @@ def evaluate_queries(
         alpha = case.get('alpha', 0.5)
         method = case.get('method', 'hybrid')
 
-        # Perform search
-        if method == 'semantic':
-            res = semantic_search(q, model, sem_idx, df, top_k)
-        elif method == 'keyword':
-            res = keyword_search(q, doc_sets, df, top_k)
-        else:
-            res = hybrid_search(q, model, sem_idx, doc_sets, df, top_k, alpha)
+        res = hybrid_search(q, model, sem_idx, doc_tokens, df, top_k, alpha, have, avoid, restrictions)
 
         # Rate with OpenAI
-        ratings = rate_with_llm_binary(q, res)
+        ratings = rate_with_llm_binary(q, have, avoid, restrictions, res)
         res['relevance'] = res['name'].map(ratings).fillna(0).astype(int)
 
         # Print results
         print(f"\n=== Query: '{q}' | method={method} | have={have} | avoid={avoid} | restrictions={restrictions} ===")
-        print_results(res, method)
+        
+        for i, r in res.iterrows():
+            print(f"{i+1}. {r['name']} - Ingredients: {' '.join(r['high_level_ingredients'])}\n")
+            print(f"Relevance rating: {r['relevance']}")
+            print("-" * 50)
 
 
 if __name__ == '__main__':
@@ -84,7 +97,6 @@ if __name__ == '__main__':
     example_queries = [
         {
             'query': 'creamy pasta',
-            'method': 'keyword',
             'top_k': 5,
             'have': ['broccoli'],
             'avoid': ['nuts'],
@@ -92,7 +104,6 @@ if __name__ == '__main__':
         },
         {
             'query': 'fried chicken',
-            'method': 'keyword',
             'top_k': 5,
             'have': None,
             'avoid': ['wheat'],
