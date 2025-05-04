@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+import sys
 
 from hybrid_search import (
     load_data, annotate_diets, load_indices, hybrid_search

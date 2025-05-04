@@ -1,13 +1,14 @@
-import argparse
-import re
-from pathlib import Path
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+from pathlib import Path
+import re
+import argparse
 
 from hybrid_search import (
     load_data, annotate_diets, load_indices,
     hybrid_search, semantic_search, keyword_search
 )
+
 
 QUERY_CASES = [
     {
@@ -39,6 +40,12 @@ QUERY_CASES = [
         "have": ["salmon"],
         "avoid": ["rice", "potato"],
         "restrictions": "keto"
+    },
+    {
+        "query": "chickpea stew without dairy",
+        "have": ["chickpea"],
+        "avoid": ["milk", "dairy"],
+        "restrictions": "vegan"
     }
 ]
 
@@ -63,7 +70,7 @@ def compute_relevance(row, case):
         if avoid_hits == 0:
             score += 1.0
         else:
-            penalty = avoid_hits / len(case['avoid']) 
+            penalty = avoid_hits / len(case['avoid'])
             score += max(0, 1.0 - penalty)
 
     if case['have']:
@@ -138,8 +145,8 @@ def main():
     plt.xticks(x, [case["query"]
                for case in QUERY_CASES], rotation=15, ha='right')
     plt.ylim(0, 1.1)
-    plt.ylabel("Avg Relevance Score (0–1)")
-    plt.title("Search Method Comparison (Top-k Relevance)")
+    plt.ylabel("Average Relevance")
+    plt.title("Top-k Relevance")
     plt.legend()
     plt.grid(axis='y', linestyle='--', alpha=0.6)
     plt.tight_layout()
