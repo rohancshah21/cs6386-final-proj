@@ -7,8 +7,8 @@ import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import faiss
-from rank_bm25 import BM25Okapi
 from sklearn.preprocessing import minmax_scale
+import pickle
 
 DIET_RULES = {
     'vegan': {
@@ -68,11 +68,11 @@ def build_semantic_index(df, model_name):
     return model, idx
 
 
-def build_bm25_index(df):
+def build_jaccard_index(df):
     docs = (df['name'].fillna('') + ' | ' + df['summary'].fillna('') + ' | ' +
             df['high_level_ingredients'].apply(lambda lst: ' '.join(lst)))
-    tokenized = [re.findall(r'\w+', d.lower()) for d in docs]
-    return BM25Okapi(tokenized)
+    tokenized = [set(re.findall(r'\w+', d.lower())) for d in docs]
+    return tokenized
 
 
 def semantic_search(q, model, idx, df, top_k):
@@ -83,31 +83,139 @@ def semantic_search(q, model, idx, df, top_k):
     return res
 
 
-def keyword_search(q, bm25, df, top_k):
-    tokens = re.findall(r'\w+', q.lower())
-    scores = bm25.get_scores(tokens)
+def jaccard_similarity(query_tokens, doc_tokens):
+    intersection = len(query_tokens.intersection(doc_tokens))
+    union = len(query_tokens.union(doc_tokens))
+    return intersection / union if union > 0 else 0
+
+
+def keyword_search(q, doc_tokens, df, top_k):
+    query_tokens = set(re.findall(r'\w+', q.lower()))
+    scores = [jaccard_similarity(query_tokens, doc) for doc in doc_tokens]
     top = np.argsort(scores)[::-1][:top_k]
     res = df.iloc[top].copy().reset_index(drop=True)
-    res['keyword_score'] = scores[top]
+    res['keyword_score'] = [scores[i] for i in top]
     return res
 
 
-def hybrid_search(q, model, idx, bm25, df, top_k, alpha):
+def hybrid_search(q, model, idx, doc_tokens, df, top_k, alpha, have_ingredients=None, avoid_ingredients=None, dietary_restrictions=None):
+    # First, filter recipes
+    filtered_df, ingredient_scores = filter_recipes(df, have_ingredients, avoid_ingredients, dietary_restrictions)
+    if filtered_df.empty:
+        return filtered_df
+    
+    # Semantic search
     q_emb = model.encode([q], normalize_embeddings=True).astype('float32')
-    sem_scores, sem_ids = idx.search(q_emb, len(df))
+    sem_scores, sem_ids = idx.search(q_emb, len(filtered_df))
     sem = sem_scores.flatten()
-    tokens = re.findall(r'\w+', q.lower())
-    kw = bm25.get_scores(tokens)
+    
+    # Keyword search
+    query_tokens = set(re.findall(r'\w+', q.lower()))
+    filtered_tokens = [doc_tokens[i] for i in filtered_df.index]
+    kw = [jaccard_similarity(query_tokens, doc) for doc in filtered_tokens]
+    
+    # Normalize and combine scores
     sem_n = minmax_scale(sem)
     kw_n = minmax_scale(kw)
-    comb = alpha * sem_n + (1-alpha) * kw_n
+    ing_n = minmax_scale(ingredient_scores)
+    
+    comb = 0.4 * sem_n + 0.3 * kw_n + 0.3 * ing_n
     top = np.argsort(comb)[::-1][:top_k]
-    res = df.iloc[top].copy().reset_index(drop=True)
+    
+    res = filtered_df.iloc[top].copy().reset_index(drop=True)
     res['semantic_score'] = sem[top]
     res['keyword_score'] = kw[top]
+    res['ingredient_score'] = ing_n[top]
     res['score'] = comb[top]
     return res
 
+
+def check_ingredients_match(recipe_ingredients, have_ingredients, avoid_ingredients):
+    recipe_ingredients_lower = [ing.lower() for ing in recipe_ingredients]
+    have_ingredients_lower = [ing.lower() for ing in have_ingredients]
+    avoid_ingredients_lower = [ing.lower() for ing in avoid_ingredients]
+    
+    # Check if recipe contains any ingredients to avoid
+    if any(ing in recipe_ingredients_lower for ing in avoid_ingredients_lower):
+        return False, 0
+    
+    # empty recipe ingredients case
+    if len(recipe_ingredients) == 0:
+        return True, 0
+    
+    # Calculate match score based on available ingredients
+    matching_ingredients = sum(1 for ing in have_ingredients_lower if any(ing in recipe_ing for recipe_ing in recipe_ingredients_lower))
+    match_score = matching_ingredients / len(recipe_ingredients)
+    
+    return True, match_score
+
+
+def filter_recipes(df, have_ingredients=None, avoid_ingredients=None, dietary_restriction=None):
+    if not any([have_ingredients, avoid_ingredients, dietary_restriction]):
+        print("No filtering criteria provided. Returning all recipes.")
+        return df, np.ones(len(df))
+    
+    filtered_indices = []
+    ingredient_scores = []
+    
+    for idx, row in df.iterrows():
+        valid = True
+        score = 1.0
+        
+        recipe_ingredients = row['high_level_ingredients']
+
+        # Check dietary restrictions
+        if dietary_restriction and not row[f'is_{dietary_restriction}']:
+            valid = False
+            score = 0.0
+            
+        # Check ingredients
+        if valid and (have_ingredients or avoid_ingredients):
+            valid, ing_score = check_ingredients_match(
+                recipe_ingredients,
+                have_ingredients or [],
+                avoid_ingredients or []
+            )
+            score = ing_score
+        
+        if valid:
+            filtered_indices.append(idx)
+            ingredient_scores.append(score)
+    
+    if not filtered_indices:
+        return pd.DataFrame(), np.array([])
+    
+    return df.iloc[filtered_indices], np.array(ingredient_scores)
+
+
+def save_indices(model, sem_idx, doc_tokens, output_dir):
+    """Save search indices to files"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save semantic index
+    faiss.write_index(sem_idx, str(output_dir / "semantic.index"))
+    
+    # Save document tokens
+    with open(output_dir / "doc_tokens.pkl", "wb") as f:
+        pickle.dump(doc_tokens, f)
+    
+    # Save model
+    model.save(str(output_dir / "sbert_model"))
+    
+def load_indices(model_dir):
+    """Load search indices from files"""
+    model_dir = Path(model_dir)
+    
+    # Load semantic model and index
+    model = SentenceTransformer(str(model_dir / "sbert_model"))
+    sem_idx = faiss.read_index(str(model_dir / "semantic.index"))
+    
+    # Load document tokens
+    with open(model_dir / "doc_tokens.pkl", "rb") as f:
+        doc_tokens = pickle.load(f)
+        
+    return model, sem_idx, doc_tokens
 
 def print_results(res, method):
     for i, r in res.iterrows():
@@ -128,6 +236,7 @@ def print_results(res, method):
 def main():
     base = Path(__file__).resolve().parent
     default_csv = base / 'data' / 'final_df.csv'
+    model_dir = base / 'models'
 
     p = argparse.ArgumentParser(description="Search recipes")
     p.add_argument('-d', '--data', type=Path,
@@ -136,30 +245,45 @@ def main():
                    default='all-MiniLM-L6-v2', help='SBERT model')
     p.add_argument('-k', '--top_k', type=int, default=5, help='Top K')
     p.add_argument(
-        '--diet', choices=['all', 'vegan', 'gluten_free', 'keto'], default='all')
+        '--diet', choices=['vegan', 'gluten_free', 'keto', 'none'], default='none')
     p.add_argument(
-        '--method', choices=['semantic', 'keyword', 'hybrid'], default='semantic')
+        '--have', nargs='*', help='Ingredients to include (quoted)')
+    p.add_argument( 
+        '--avoid', nargs='*', help='Ingredients to exclude (quoted)')
+    p.add_argument(
+        '--method', choices=['semantic', 'keyword', 'hybrid'], default='hybrid')
     p.add_argument('--alpha', type=float, default=0.5, help='Hybrid weight')
+    p.add_argument('--build', action='store_true', help='Build and save indices')
     p.add_argument('query', nargs='*', help='Optional query (quoted)')
     args = p.parse_args()
 
     df = load_data(args.data)
     df = annotate_diets(df)
-    if args.diet != 'all':
-        df = df[df[f'is_{args.diet}']].reset_index(drop=True)
 
-    model, sem_idx = build_semantic_index(df, args.model)
-    bm25 = build_bm25_index(df)
+    if args.build:
+        print("Building indices...")
+        model, sem_idx = build_semantic_index(df, args.model)
+        doc_tokens = build_jaccard_index(df)
+        save_indices(model, sem_idx, doc_tokens, model_dir)
+        print(f"Indices saved to {model_dir}")
+        return
+    
+    try:
+        print("Loading pre-built indices...")
+        model, sem_idx, doc_tokens = load_indices(model_dir)
+    except (FileNotFoundError, OSError):
+        print("Pre-built indices not found. Run with --build first.")
+        sys.exit(1)
 
     if args.query:
         q = " ".join(args.query)
         if args.method == 'semantic':
             res = semantic_search(q, model, sem_idx, df, args.top_k)
         elif args.method == 'keyword':
-            res = keyword_search(q, bm25, df, args.top_k)
+            res = keyword_search(q, doc_tokens, df, args.top_k)  
         else:
-            res = hybrid_search(q, model, sem_idx, bm25,
-                                df, args.top_k, args.alpha)
+            res = hybrid_search(q, model, sem_idx, doc_tokens, 
+                              df, args.top_k, args.alpha)
         print_results(res, args.method)
         return
 
@@ -172,9 +296,9 @@ def main():
             if args.method == 'semantic':
                 res = semantic_search(q, model, sem_idx, df, args.top_k)
             elif args.method == 'keyword':
-                res = keyword_search(q, bm25, df, args.top_k)
+                res = keyword_search(q, doc_tokens, df, args.top_k)  
             else:
-                res = hybrid_search(q, model, sem_idx, bm25,
+                res = hybrid_search(q, model, sem_idx, doc_tokens, 
                                     df, args.top_k, args.alpha)
             print_results(res, args.method)
         except (KeyboardInterrupt, EOFError):

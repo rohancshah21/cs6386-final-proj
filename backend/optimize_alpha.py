@@ -8,7 +8,7 @@ from sklearn.preprocessing import minmax_scale
 
 from hybrid_search import (
     load_data, annotate_diets,
-    build_semantic_index, build_bm25_index,
+    build_semantic_index, build_jaccard_index,
     hybrid_search
 )
 
@@ -58,7 +58,7 @@ def main():
     df = load_data(args.data)
     df = annotate_diets(df)
     model, sem_idx = build_semantic_index(df, 'all-MiniLM-L6-v2')
-    bm25 = build_bm25_index(df)
+    idx = build_jaccard_index(df)
 
     alphas = np.linspace(0.1, 1, 21)
     avg_rels = []
@@ -67,7 +67,7 @@ def main():
         rels = []
         for case in TEST_CASES:
             res = hybrid_search(
-                case['query'], model, sem_idx, bm25, df, args.top_k, α
+                case['query'], model, sem_idx, idx, df, args.top_k, α
             )
             rels += [relevance(res.iloc[i], case) for i in range(len(res))]
         avg_rels.append(np.mean(rels))
