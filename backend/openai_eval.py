@@ -23,16 +23,20 @@ def rate_with_llm_binary(query: str, have: list[str], avoid: list[str], restrict
         "0.0 - Not relevant at ALL or violates requirements\n\n"
     ]
     if have:
-        prompt.append(f"User has the following ingredients: {', '.join(have)}\n")
+        prompt.append(
+            f"User has the following ingredients: {', '.join(have)}\n")
     if avoid:
-        prompt.append(f"User wants to avoid the following ingredients: {', '.join(avoid)}\n")
+        prompt.append(
+            f"User wants to avoid the following ingredients: {', '.join(avoid)}\n")
     if restrictions:
         prompt.append(f"User has dietary restrictions: {restrictions}\n")
     prompt.append("Here are the top 5 recipes:\n")
-    
+
     for i, r in results.iterrows():
-        prompt.append(f"{i+1}. {r['name']} - Ingredients: {' '.join(r['high_level_ingredients'])}\n Description: {r['summary']}\n")
-    prompt.append("\nFor each recipe, rate relevance as 1.0, 0.5, or 0.0, formatted as a JSON list of objects with 'name' and 'rating'.\n")
+        prompt.append(
+            f"{i+1}. {r['name']} - Ingredients: {' '.join(r['high_level_ingredients'])}\n Description: {r['summary']}\n")
+    prompt.append(
+        "\nFor each recipe, rate relevance as 1.0, 0.5, or 0.0, formatted as a JSON list of objects with 'name' and 'rating'.\n")
     content = ''.join(prompt)
 
     resp = _client.chat.completions.create(
@@ -81,17 +85,20 @@ def evaluate_queries(
         alpha = case.get('alpha', 0.5)
         method = case.get('method', 'hybrid')
 
-        res = hybrid_search(q, model, sem_idx, doc_tokens, df, top_k, alpha, have, avoid, restrictions)
+        res = hybrid_search(q, model, sem_idx, doc_tokens,
+                            df, top_k, alpha, have, avoid, restrictions)
 
         # Rate with OpenAI
         ratings = rate_with_llm_binary(q, have, avoid, restrictions, res)
         res['relevance'] = res['name'].map(ratings).fillna(0).astype(float)
 
         # Print results with relevance indicators
-        print(f"\n=== Query: '{q}' | method={method} | have={have} | avoid={avoid} | restrictions={restrictions} ===")
-        
+        print(
+            f"\n=== Query: '{q}' | method={method} | have={have} | avoid={avoid} | restrictions={restrictions} ===")
+
         for i, r in res.iterrows():
-            print(f"{i+1}. {r['name']} - Ingredients: {' '.join(r['high_level_ingredients'])}\n")
+            print(
+                f"{i+1}. {r['name']} - Ingredients: {' '.join(r['high_level_ingredients'])}\n")
             relevance = r['relevance']
             indicator = "✓✓" if relevance == 1.0 else "✓" if relevance == 0.5 else "✗"
             print(f"Relevance rating: {relevance:.1f} {indicator}")
