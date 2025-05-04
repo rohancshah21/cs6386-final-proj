@@ -69,7 +69,7 @@ def build_semantic_index(df, model_name):
 
 
 def build_jaccard_index(df):
-    docs = (df['name'].fillna('') + ' | '  + df['high_level_ingredients'].apply(lambda lst: ' '.join(lst)))
+    docs = (df['name'].fillna(''))
     tokenized = [set(re.findall(r'\w+', d.lower())) for d in docs]
     print(docs[0], tokenized[0])
     return tokenized
