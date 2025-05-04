@@ -112,19 +112,16 @@ def main():
         avoid = case.get("avoid")
         restriction = case.get("restrictions")
 
-        # Keyword
         kw_res = keyword_search(q, doc_tokens, df, args.top_k)
         kw_score = np.mean([compute_relevance(r, case)
                            for _, r in kw_res.iterrows()])
         avg_keyword_scores.append(kw_score)
 
-        # Semantic
         sem_res = semantic_search(q, model, sem_idx, df, args.top_k)
         sem_score = np.mean([compute_relevance(r, case)
                             for _, r in sem_res.iterrows()])
         avg_semantic_scores.append(sem_score)
 
-        # Hybrid
         hyb_res = hybrid_search(q, model, sem_idx, doc_tokens,
                                 df, args.top_k, args.alpha, have, avoid, restriction)
         hyb_score = np.mean([compute_relevance(r, case)
@@ -146,7 +143,7 @@ def main():
                for case in QUERY_CASES], rotation=15, ha='right')
     plt.ylim(0, 1.1)
     plt.ylabel("Average Relevance")
-    plt.title("Top-k Relevance")
+    plt.title("Top-k Relevance of Different Search Methods")
     plt.legend()
     plt.grid(axis='y', linestyle='--', alpha=0.6)
     plt.tight_layout()

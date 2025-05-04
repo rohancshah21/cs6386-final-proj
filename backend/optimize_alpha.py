@@ -119,7 +119,7 @@ def main():
 
     plt.figure(figsize=(8, 5))
     plt.plot(alphas, avg_scores, marker='o')
-    plt.xlabel("Alpha (semantic weight)")
+    plt.xlabel("α (semantic weight)")
     plt.ylabel("Average Relevance")
     plt.title("Relevance vs α")
     plt.grid(True)
