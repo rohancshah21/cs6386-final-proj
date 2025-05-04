@@ -17,25 +17,29 @@ def rate_with_llm_binary(query: str, have: list[str], avoid: list[str], restrict
     # build prompt
     prompt = [
         f"You are a recipe relevance evaluator. The user asked: for '{query}'\n",
+        "Rate each recipe's relevance on a scale:\n",
+        "1.0 - Highly relevant and matches all requirements\n",
+        "0.5 - Somewhat relevant or matches some requirements\n",
+        "0.0 - Not relevant at ALL or violates requirements\n\n"
     ]
     if have:
         prompt.append(f"User has the following ingredients: {', '.join(have)}\n")
     if avoid:
         prompt.append(f"User wants to avoid the following ingredients: {', '.join(avoid)}\n")
     if restrictions:
-        prompt.append(f"User has dietary restrictions: {', '.join(restrictions)}\n")
+        prompt.append(f"User has dietary restrictions: {restrictions}\n")
     prompt.append("Here are the top 5 recipes:\n")
     
     for i, r in results.iterrows():
         prompt.append(f"{i+1}. {r['name']} - Ingredients: {' '.join(r['high_level_ingredients'])}\n Description: {r['summary']}\n")
-    prompt.append("\nFor each recipe, return 1 if it is relevant to the query, or 0 if not, formatted as a JSON list of objects with 'name' and 'rating'.\n")
+    prompt.append("\nFor each recipe, rate relevance as 1.0, 0.5, or 0.0, formatted as a JSON list of objects with 'name' and 'rating'.\n")
     content = ''.join(prompt)
 
     resp = _client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0.0,
         messages=[
-            {"role": "system", "content": "You rate recipe relevance with 1 or 0."},
+            {"role": "system", "content": "You rate recipe relevance with 1.0, 0.5, or 0.0."},
             {"role": "user",   "content": content}
         ]
     )
@@ -45,7 +49,7 @@ def rate_with_llm_binary(query: str, have: list[str], avoid: list[str], restrict
     if m:
         import json
         for obj in json.loads(m.group(0)):
-            ratings[obj['name']] = obj['rating']
+            ratings[obj['name']] = float(obj['rating'])
     return ratings
 
 
@@ -81,14 +85,16 @@ def evaluate_queries(
 
         # Rate with OpenAI
         ratings = rate_with_llm_binary(q, have, avoid, restrictions, res)
-        res['relevance'] = res['name'].map(ratings).fillna(0).astype(int)
+        res['relevance'] = res['name'].map(ratings).fillna(0).astype(float)
 
-        # Print results
+        # Print results with relevance indicators
         print(f"\n=== Query: '{q}' | method={method} | have={have} | avoid={avoid} | restrictions={restrictions} ===")
         
         for i, r in res.iterrows():
             print(f"{i+1}. {r['name']} - Ingredients: {' '.join(r['high_level_ingredients'])}\n")
-            print(f"Relevance rating: {r['relevance']}")
+            relevance = r['relevance']
+            indicator = "✓✓" if relevance == 1.0 else "✓" if relevance == 0.5 else "✗"
+            print(f"Relevance rating: {relevance:.1f} {indicator}")
             print("-" * 50)
 
 
@@ -98,7 +104,7 @@ if __name__ == '__main__':
         {
             'query': 'creamy pasta',
             'top_k': 5,
-            'alpha': 0.5,
+            'alpha': 1,
             'have': ['broccoli'],
             'avoid': ['nuts'],
             'restrictions': 'vegan'
@@ -106,10 +112,74 @@ if __name__ == '__main__':
         {
             'query': 'fried chicken',
             'top_k': 5,
-            'alpha': 0.5,
+            'alpha': 1,
             'have': None,
             'avoid': ['wheat'],
             'restrictions': 'gluten_free'
+        },
+        {
+            'query': 'chickpea stew',
+            'top_k': 5,
+            'alpha': 1,
+            'have': ['chickpea'],
+            'avoid': None,
+            'restrictions': None
+        },
+        {
+            'query': 'quick breakfast smoothie',
+            'top_k': 5,
+            'alpha': 1,
+            'have': ['banana', 'yogurt'],
+            'avoid': ['peanut'],
+            'restrictions': None
+        },
+        {
+            'query': 'spicy tofu dinner',
+            'top_k': 5,
+            'alpha': 1,
+            'have': ['tofu'],
+            'avoid': ['fish sauce'],
+            'restrictions': 'vegan'
+        },
+        {
+            'query': 'low carb dinner',
+            'top_k': 5,
+            'alpha': 1,
+            'have': ['chicken'],
+            'avoid': ['potato', 'rice'],
+            'restrictions': 'keto'
+        },
+        {
+            'query': 'mediterranean salad',
+            'top_k': 5,
+            'alpha': 1,
+            'have': ['cucumber', 'tomato'],
+            'avoid': None,
+            'restrictions': None
+        },
+        {
+            'query': 'healthy acai bowl',
+            'top_k': 5,
+            'alpha': 1,
+            'have': ['berries'],
+            'avoid': ['chocolate'],
+            'restrictions': None
+        },
+        {
+            'query': 'asian noodle soup',
+            'top_k': 5,
+            'alpha': 1,
+            'have': None,
+            'avoid': None,
+            'restrictions': None
+        },
+        {
+            'query': 'party appetizers',
+            'top_k': 5,
+            'alpha': 1,
+            'have': ['cheese'],
+            'avoid': ['nuts', 'shellfish'],
+            'restrictions': None
         }
     ]
     data_csv = Path(__file__).resolve().parent / 'data' / 'final_df.csv'
