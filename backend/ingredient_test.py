@@ -22,29 +22,37 @@ QUERY_CASES = [
         "have": ["chicken", "lettuce", "mayonnaise"],
         "avoid": None,
         "restrictions": None,
-        "label": "query + 3 core ingredients"
+        "label": "query + 3 ingredients"
     },
     {
         "query": "chicken salad with creamy dressing and vegetables",
         "have": ["chicken", "lettuce", "mayonnaise", "celery", "onion"],
         "avoid": None,
         "restrictions": None,
-        "label": "query + 5 extended ingredients"
+        "label": "query + 5 ingredients"
     },
     {
         "query": "chicken salad with creamy dressing and vegetables",
         "have": ["chicken", "lettuce", "mayonnaise", "celery", "onion", "mustard", "vinegar", "dill", "parsley", "lemon juice"],
         "avoid": None,
         "restrictions": None,
-        "label": "query + 10 full ingredients"
+        "label": "query + 10 ingredients"
     },
     {
         "query": "chicken salad with creamy dressing and vegetables",
         "have": None,
         "avoid": ["mayonnaise", "apples", "mint"],
         "restrictions": None,
-        "label": "query + avoid ingredients"
-    }
+        "label": "query + 3 avoided ingredients"
+    },
+    {
+        "query": "chicken salad with creamy dressing and vegetables",
+        "have": ["chicken", "lettuce", "mayonnaise"],
+        "avoid": ["mayonnaise", "apples", "mint"],
+        "restrictions": None,
+        "label": "query + 3 incl./avoided ingredients"
+    },
+
 ]
 
 
