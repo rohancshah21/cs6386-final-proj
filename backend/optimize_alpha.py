@@ -1,5 +1,4 @@
 import argparse
-import re
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,6 +7,8 @@ import sys
 from hybrid_search import (
     load_data, annotate_diets, load_indices, hybrid_search
 )
+from openai_eval import rate_with_llm_binary
+
 
 QUERY_CASES = [
     {
@@ -43,45 +44,10 @@ QUERY_CASES = [
 ]
 
 
-def compute_relevance(row, case):
-    score = 0.0
-    total_weight = 0.0
-
-    ingredients = [i.lower() for i in row['high_level_ingredients']]
-    ingredient_text = " ".join(ingredients)
-    combined_text = f"{row['name']} {row.get('summary', '')} {ingredient_text}".lower(
-    )
-
-    if case['restrictions']:
-        total_weight += 1.0
-        if row.get(f"is_{case['restrictions']}", False):
-            score += 1.0
-
-    if case['avoid']:
-        total_weight += 1.0
-        avoid_hits = sum(1 for a in case['avoid'] if a in ingredient_text)
-        if avoid_hits == 0:
-            score += 1.0
-        else:
-            penalty = avoid_hits / len(case['avoid'])
-            score += max(0, 1.0 - penalty)
-
-    if case['have']:
-        total_weight += 1.0
-        have_hits = sum(1 for h in case['have'] if h in ingredient_text)
-        score += have_hits / len(case['have'])
-
-    query_tokens = set(re.findall(r'\w+', case['query'].lower()))
-    total_weight += 1.0
-    hits = sum(1 for token in query_tokens if token in combined_text)
-    score += hits / len(query_tokens) if query_tokens else 0
-
-    return round(score / total_weight, 3) if total_weight > 0 else 0.0
-
-
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data', type=Path, default=Path("data/final_df.csv"))
+    parser.add_argument('--data', type=Path,
+                        default=Path("backend/data/final_df.csv"))
     parser.add_argument('--top_k', type=int, default=5)
     parser.add_argument('--out', type=Path,
                         default=Path("alpha_relevance_plot.png"))
@@ -97,7 +63,7 @@ def main():
     avg_scores = []
 
     for alpha in alphas:
-        relevance_scores = []
+        all_ratings = []
         for case in QUERY_CASES:
             res = hybrid_search(
                 q=case['query'],
@@ -111,17 +77,24 @@ def main():
                 avoid_ingredients=case.get('avoid'),
                 dietary_restriction=case.get('restrictions')
             )
-            relevance_scores.extend([
-                compute_relevance(row, case) for _, row in res.iterrows()
-            ])
-        avg = np.mean(relevance_scores)
-        avg_scores.append(avg)
+
+            ratings = rate_with_llm_binary(
+                query=case['query'],
+                have=case.get('have'),
+                avoid=case.get('avoid'),
+                restrictions=case.get('restrictions'),
+                results=res
+            )
+            res['relevance'] = res['name'].map(ratings).fillna(0).astype(float)
+            all_ratings.extend(res['relevance'].tolist())
+
+        avg_scores.append(np.mean(all_ratings))
 
     plt.figure(figsize=(8, 5))
-    plt.plot(alphas, avg_scores, marker='o')
+    plt.plot(alphas, avg_scores, marker='o', color='purple')
     plt.xlabel("α (semantic weight)")
-    plt.ylabel("Average Relevance")
-    plt.title("Relevance vs α")
+    plt.ylabel("Average LLM Relevance")
+    plt.title("Relevance vs α (Hybrid Weighting)")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(args.out)
