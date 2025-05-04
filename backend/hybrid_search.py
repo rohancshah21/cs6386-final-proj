@@ -69,9 +69,9 @@ def build_semantic_index(df, model_name):
 
 
 def build_jaccard_index(df):
-    docs = (df['name'].fillna('') + ' | ' + df['summary'].fillna('') + ' | ' +
-            df['high_level_ingredients'].apply(lambda lst: ' '.join(lst)))
+    docs = (df['name'].fillna('') + ' | '  + df['high_level_ingredients'].apply(lambda lst: ' '.join(lst)))
     tokenized = [set(re.findall(r'\w+', d.lower())) for d in docs]
+    print(docs[0], tokenized[0])
     return tokenized
 
 
@@ -84,6 +84,8 @@ def semantic_search(q, model, idx, df, top_k):
 
 
 def jaccard_similarity(query_tokens, doc_tokens):
+    print(f"Query tokens: {query_tokens}")
+    print(f"Document tokens: {doc_tokens}")
     intersection = len(query_tokens.intersection(doc_tokens))
     union = len(query_tokens.union(doc_tokens))
     return intersection / union if union > 0 else 0
@@ -98,94 +100,80 @@ def keyword_search(q, doc_tokens, df, top_k):
     return res
 
 
-def hybrid_search(q, model, idx, doc_tokens, df, top_k, alpha, have_ingredients=None, avoid_ingredients=None, dietary_restrictions=None):
-    # First, filter recipes
-    filtered_df, ingredient_scores = filter_recipes(df, have_ingredients, avoid_ingredients, dietary_restrictions)
-    if filtered_df.empty:
-        return filtered_df
+def hybrid_search(q, model, idx, doc_tokens, df, top_k, alpha, have_ingredients=None, avoid_ingredients=None, dietary_restriction=None):
+    # Semantic search component
     
-    # Semantic search
+    ingredient_scores = calculate_ingredient_scores(df, have_ingredients, avoid_ingredients, dietary_restriction)
+
     q_emb = model.encode([q], normalize_embeddings=True).astype('float32')
-    sem_scores, sem_ids = idx.search(q_emb, len(filtered_df))
-    sem = sem_scores.flatten()
+    sem_scores, sem_ids = idx.search(q_emb, len(df))  # shape (1, N) each
+    scores, ids = sem_scores[0], sem_ids[0]
+    sem = np.empty(len(df), dtype=float)
+    sem[ids] = scores
     
-    # Keyword search
+    # Keyword search component
     query_tokens = set(re.findall(r'\w+', q.lower()))
-    filtered_tokens = [doc_tokens[i] for i in filtered_df.index]
-    kw = [jaccard_similarity(query_tokens, doc) for doc in filtered_tokens]
-    
-    # Normalize and combine scores
+    kw = np.array([jaccard_similarity(query_tokens, doc) for doc in doc_tokens])
+        
+    # Normalize scores
     sem_n = minmax_scale(sem)
     kw_n = minmax_scale(kw)
     ing_n = minmax_scale(ingredient_scores)
     
-    comb = 0.4 * sem_n + 0.3 * kw_n + 0.3 * ing_n
-    top = np.argsort(comb)[::-1][:top_k]
-    
-    res = filtered_df.iloc[top].copy().reset_index(drop=True)
-    res['semantic_score'] = sem[top]
-    res['keyword_score'] = kw[top]
+    # Combine scores
+    comb = 0.7 * (alpha * sem_n + (1 - alpha) * kw_n) + 0.3 * ing_n
+
+    valid_indices = ingredient_scores > 0
+    if valid_indices.any():
+        top = np.argsort(comb * valid_indices)[::-1][:top_k]
+    else:
+        top = np.argsort(comb)[::-1][:top_k]
+        
+    res = df.iloc[top].copy().reset_index(drop=True)
+    res['semantic_score'] = sem_n[top]
+    res['keyword_score'] = kw_n[top]
     res['ingredient_score'] = ing_n[top]
     res['score'] = comb[top]
     return res
 
-
 def check_ingredients_match(recipe_ingredients, have_ingredients, avoid_ingredients):
     recipe_ingredients_lower = [ing.lower() for ing in recipe_ingredients]
-    have_ingredients_lower = [ing.lower() for ing in have_ingredients]
-    avoid_ingredients_lower = [ing.lower() for ing in avoid_ingredients]
+    have_ingredients_lower = [ing.lower() for ing in have_ingredients] if have_ingredients else []
+    avoid_ingredients_lower = [ing.lower() for ing in avoid_ingredients] if avoid_ingredients else []
     
-    # Check if recipe contains any ingredients to avoid
+    # If recipe contains any ingredients to avoid, return score of 0
     if any(ing in recipe_ingredients_lower for ing in avoid_ingredients_lower):
-        return False, 0
+        return 0.0
     
-    # empty recipe ingredients case
-    if len(recipe_ingredients) == 0:
-        return True, 0
+    # empty recipe or no required ingredients case
+    if len(recipe_ingredients) == 0 or not have_ingredients:
+        return 1.0
     
     # Calculate match score based on available ingredients
     matching_ingredients = sum(1 for ing in have_ingredients_lower if any(ing in recipe_ing for recipe_ing in recipe_ingredients_lower))
-    match_score = matching_ingredients / len(recipe_ingredients)
-    
-    return True, match_score
+    return matching_ingredients / len(recipe_ingredients)
 
 
-def filter_recipes(df, have_ingredients=None, avoid_ingredients=None, dietary_restriction=None):
+def calculate_ingredient_scores(df, have_ingredients=None, avoid_ingredients=None, dietary_restriction=None):
     if not any([have_ingredients, avoid_ingredients, dietary_restriction]):
-        print("No filtering criteria provided. Returning all recipes.")
-        return df, np.ones(len(df))
+        return np.ones(len(df))
     
-    filtered_indices = []
-    ingredient_scores = []
-    
-    for idx, row in df.iterrows():
-        valid = True
-        score = 1.0
-        
-        recipe_ingredients = row['high_level_ingredients']
-
-        # Check dietary restrictions
+    scores = []
+    for _, row in df.iterrows():
+        # Check dietary restrictions first
         if dietary_restriction and not row[f'is_{dietary_restriction}']:
-            valid = False
-            score = 0.0
+            scores.append(0.0)
+            continue
             
-        # Check ingredients
-        if valid and (have_ingredients or avoid_ingredients):
-            valid, ing_score = check_ingredients_match(
-                recipe_ingredients,
-                have_ingredients or [],
-                avoid_ingredients or []
-            )
-            score = ing_score
-        
-        if valid:
-            filtered_indices.append(idx)
-            ingredient_scores.append(score)
+        # Calculate ingredient match score
+        score = check_ingredients_match(
+            row['high_level_ingredients'],
+            have_ingredients,
+            avoid_ingredients
+        )
+        scores.append(score)
     
-    if not filtered_indices:
-        return pd.DataFrame(), np.array([])
-    
-    return df.iloc[filtered_indices], np.array(ingredient_scores)
+    return np.array(scores)
 
 
 def save_indices(model, sem_idx, doc_tokens, output_dir):
@@ -225,9 +213,11 @@ def print_results(res, method):
         elif method == 'keyword':
             line += f"  (kw={r['keyword_score']:.3f})"
         else:
-            line += f"  (sem={r['semantic_score']:.3f}, kw={r['keyword_score']:.3f}, combined={r['score']:.3f})"
+            line += f"  (sem={r['semantic_score']:.3f}, kw={r['keyword_score']:.3f}, ing={r['ingredient_score']:.3f}, combined={r['score']:.3f})"
         print(line)
 
+        print("Ingredients:")
+        print(", ".join(r['high_level_ingredients']), "\n")
         print("Directions:")
         print(r['directions'], "\n")
         print("-"*50)
@@ -262,8 +252,8 @@ def main():
 
     if args.build:
         print("Building indices...")
-        model, sem_idx = build_semantic_index(df, args.model)
         doc_tokens = build_jaccard_index(df)
+        model, sem_idx = build_semantic_index(df, args.model)
         save_indices(model, sem_idx, doc_tokens, model_dir)
         print(f"Indices saved to {model_dir}")
         return
@@ -280,10 +270,10 @@ def main():
         if args.method == 'semantic':
             res = semantic_search(q, model, sem_idx, df, args.top_k)
         elif args.method == 'keyword':
-            res = keyword_search(q, doc_tokens, df, args.top_k)  
+            res = keyword_search(q, doc_tokens, df, args.top_k)
         else:
-            res = hybrid_search(q, model, sem_idx, doc_tokens, 
-                              df, args.top_k, args.alpha)
+            res = hybrid_search(q, model, sem_idx, doc_tokens, df, args.top_k, 
+                              args.alpha, args.have, args.avoid, args.diet if args.diet != 'none' else None)
         print_results(res, args.method)
         return
 
@@ -298,8 +288,8 @@ def main():
             elif args.method == 'keyword':
                 res = keyword_search(q, doc_tokens, df, args.top_k)  
             else:
-                res = hybrid_search(q, model, sem_idx, doc_tokens, 
-                                    df, args.top_k, args.alpha)
+                res = hybrid_search(q, model, sem_idx, doc_tokens, df, args.top_k,
+                                  args.alpha, args.have, args.avoid, args.diet if args.diet != 'none' else None)
             print_results(res, args.method)
         except (KeyboardInterrupt, EOFError):
             break
