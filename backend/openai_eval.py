@@ -98,6 +98,7 @@ if __name__ == '__main__':
         {
             'query': 'creamy pasta',
             'top_k': 5,
+            'alpha': 0.5,
             'have': ['broccoli'],
             'avoid': ['nuts'],
             'restrictions': ['vegan']
@@ -105,6 +106,7 @@ if __name__ == '__main__':
         {
             'query': 'fried chicken',
             'top_k': 5,
+            'alpha': 0.5,
             'have': None,
             'avoid': ['wheat'],
             'restrictions': ['gluten_free']
