@@ -101,7 +101,7 @@ if __name__ == '__main__':
             'alpha': 0.5,
             'have': ['broccoli'],
             'avoid': ['nuts'],
-            'restrictions': ['vegan']
+            'restrictions': 'vegan'
         },
         {
             'query': 'fried chicken',
@@ -109,7 +109,7 @@ if __name__ == '__main__':
             'alpha': 0.5,
             'have': None,
             'avoid': ['wheat'],
-            'restrictions': ['gluten_free']
+            'restrictions': 'gluten_free'
         }
     ]
     data_csv = Path(__file__).resolve().parent / 'data' / 'final_df.csv'
